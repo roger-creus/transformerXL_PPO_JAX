@@ -9,7 +9,7 @@ from flax.training.train_state import TrainState
 import distrax
 import gymnax
 from gymnax.wrappers.purerl import  FlattenObservationWrapper
-
+from psgd_jax.kron import kron
 
 
 from wrappers import (
@@ -183,6 +183,10 @@ def make_train(config):
     def linear_schedule(count):
         frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / (config["NUM_UPDATES"]) 
         return config["LR"] * frac
+    
+    def linear_schedule_kron(count):
+        frac = 1.0 - (count // (config["NUM_MINIBATCHES"] * config["UPDATE_EPOCHS"])) / (config["NUM_UPDATES"]) 
+        return (config["LR"]/2) * frac
 
     
     def train(rng):
@@ -204,15 +208,27 @@ def make_train(config):
         network_params = network.init(_rng, init_memory,init_obs,init_mask)
         
         
-        
-        
         if config["ANNEAL_LR"]:
+            if config["OPTIMIZER"]=="adam":
+                opt = optax.adam(learning_rate=linear_schedule, eps=1e-5)
+            elif config["OPTIMIZER"]=="kron":
+                opt = kron(learning_rate=linear_schedule_kron)
+            else:
+                raise ValueError(f"Optimizer {config['OPTIMIZER']} not supported")
+            
             tx = optax.chain(
                 optax.clip_by_global_norm(config["MAX_GRAD_NORM"]),
-                optax.adam(learning_rate=linear_schedule, eps=1e-5),
+                opt,
             )
         else:
-            tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), optax.adam(config["LR"], eps=1e-5))
+            if config["OPTIMIZER"]=="adam":
+                opt = optax.adam(learning_rate=config["LR"], eps=1e-5)
+            elif config["OPTIMIZER"]=="kron":
+                opt = kron(learning_rate=config["LR"]/2)
+            else:
+                raise ValueError(f"Optimizer {config['OPTIMIZER']} not supported")
+                
+            tx = optax.chain(optax.clip_by_global_norm(config["MAX_GRAD_NORM"]), opt)
             
             
         train_state = TrainState.create(
@@ -390,6 +406,7 @@ def make_train(config):
                             + config["VF_COEF"] * value_loss
                             - config["ENT_COEF"] * entropy
                         )
+                        
                         return total_loss, (value_loss, loss_actor, entropy)
 
                     grad_fn = jax.value_and_grad(_loss_fn, has_aux=True)
@@ -429,6 +446,7 @@ def make_train(config):
                 train_state, total_loss = jax.lax.scan(
                     _update_minbatch, train_state, minibatches
                 )
+                
 
                 update_state = (train_state, traj_batch,memories_batch, advantages, targets, rng)
                 return update_state, total_loss
@@ -441,12 +459,12 @@ def make_train(config):
 
             
             #CRAFTAX ONLY
-            metric = jax.tree_map(
+            metric = jax.tree_util.tree_map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
                 / traj_batch.info["returned_episode"].sum(),
                 traj_batch.info,
             )
-            metric=jax.tree_map(lambda x: x.mean(),metric)
+            metric=jax.tree_util.tree_map(lambda x: x.mean(),metric)
             
         
             
@@ -472,6 +490,7 @@ def make_train(config):
         runner_state, metric = jax.lax.scan(
             _update_step, runner_state, None, config["NUM_UPDATES"]
         )
+        
         return {"runner_state": runner_state, "metrics": metric}
 
     return train

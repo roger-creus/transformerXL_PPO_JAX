@@ -454,13 +454,13 @@ def make_train(config,rng):
 
             
             #CRAFTAX ONLY
-            metric = jax.tree_map(
+            metric = jax.tree_util.tree_map(
                 lambda x: (x * traj_batch.info["returned_episode"]).sum()
                 / traj_batch.info["returned_episode"].sum(),
                 traj_batch.info,
             )
             metric=jax.lax.pmean(metric, axis_name="devices")
-            metric=jax.tree_map(lambda x: x.mean(),metric)
+            metric=jax.tree_util.tree_map(lambda x: x.mean(),metric)
             
         
             
